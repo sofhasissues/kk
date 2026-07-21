@@ -135,7 +135,7 @@ async def lifespan(app: FastAPI):
     try:
         docs, embs, reranker = generate_q4(config.EMAIL)
         Q4_DOCS = docs
-        Q4_EMBEDDINGS = {k: np.array(v, dtype=np.float32) for k, v in embs.items()}
+        Q4_EMBEDDINGS = {k: np.array(v, dtype=np.float64) for k, v in embs.items()}
         Q4_RERANKER = reranker
         print(f"Q4 data generated for {config.EMAIL}: {len(Q4_DOCS)} docs.")
     except Exception as e:
@@ -246,7 +246,7 @@ def cosine_sim(a, b):
 async def vector_search(request: Request):
     body = await request.json()
     query_id = body.get("query_id")
-    query_vector = np.array(body.get("query_vector", []), dtype=np.float32)
+    query_vector = np.array(body.get("query_vector", []), dtype=np.float64)
     top_k = body.get("top_k", 10)
     rerank_top_n = body.get("rerank_top_n", 3)
     filters = body.get("filter", {})
