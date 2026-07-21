@@ -235,96 +235,55 @@ async def q3_answer(request: Request):
         return {"answer": "I don't know", "citations": [], "confidence": 0.1, "answerable": False}
 
 # ================= Q4: /vector-search =================
-def cosine_similarity(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-
+def cosine_sim(a, b):
+    norm_a = np.linalg.norm(a)
+    norm_b = np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(a, b) / (norm_a * norm_b))
 
 @app.post("/vector-search")
 async def vector_search(request: Request):
     body = await request.json()
-
-    query_id = body["query_id"]
-    query_vector = np.array(body["query_vector"], dtype=np.float32)
-
-    top_k = body["top_k"]
-    rerank_top_n = body["rerank_top_n"]
+    query_id = body.get("query_id")
+    query_vector = np.array(body.get("query_vector", []), dtype=np.float32)
+    top_k = body.get("top_k", 10)
+    rerank_top_n = body.get("rerank_top_n", 3)
     filters = body.get("filter", {})
-
-    # ------------------------
-    # Filter
-    # ------------------------
+    # 1. Filter documents
     filtered_docs = []
-
     for doc in Q4_DOCS:
-        ok = True
-
-        for field, condition in filters.items():
-            value = doc.get(field)
-
+        match = True
+        for key, condition in filters.items():
             if isinstance(condition, dict):
-
-                if "gte" in condition:
-                    if value < condition["gte"]:
-                        ok = False
-                        break
-
-                if "lte" in condition:
-                    if value > condition["lte"]:
-                        ok = False
-                        break
-
-                if "in" in condition:
-                    if value not in condition["in"]:
-                        ok = False
-                        break
-
+                if "gte" in condition and not (doc.get(key, 0) >= condition["gte"]):
+                    match = False
+                if "lte" in condition and not (doc.get(key, 0) <= condition["lte"]):
+                    match = False
+                if "in" in condition and doc.get(key) not in condition["in"]:
+                    match = False
             else:
-                if value != condition:
-                    ok = False
-                    break
-
-        if ok:
+                if doc.get(key) != condition:
+                    match = False
+        if match:
             filtered_docs.append(doc)
-
-    # ------------------------
-    # Vector Search
-    # ------------------------
-    retrieved = []
-
+    # 2. Cosine similarity
+    scored_docs = []
     for doc in filtered_docs:
         doc_id = doc["doc_id"]
-
-        similarity = cosine_similarity(
-            query_vector,
-            Q4_EMBEDDINGS[doc_id]
-        )
-
-        retrieved.append((doc_id, similarity))
-
-    retrieved = sorted(
-        retrieved,
-        key=lambda x: (-x[1], x[0])
-    )[:top_k]
-
-    # ------------------------
-    # Re-ranking
-    # ------------------------
-    reranker = Q4_RERANKER[query_id]
-
-    reranked = sorted(
-        retrieved,
-        key=lambda x: (-reranker[x[0]], x[0])
-    )
-
-    # ------------------------
-    # Response
-    # ------------------------
-    return {
-        "matches": [
-            doc_id
-            for doc_id, _ in reranked[:rerank_top_n]
-        ]
-    }
+        doc_emb = Q4_EMBEDDINGS.get(doc_id)
+        if doc_emb is not None:
+            sim = cosine_sim(query_vector, doc_emb)
+            scored_docs.append({"doc_id": doc_id, "sim": sim})
+    # 3. Top-k (desc sim, tie-break lexicographic)
+    scored_docs.sort(key=lambda x: (-x["sim"], x["doc_id"]))
+    top_k_docs = scored_docs[:top_k]
+    # 4. Re-rank
+    rerank_scores = Q4_RERANKER.get(query_id, {})
+    for doc in top_k_docs:
+        doc["rerank_score"] = rerank_scores.get(doc["doc_id"], -999.0)
+    top_k_docs.sort(key=lambda x: (-x["rerank_score"], x["doc_id"]))
+    return {"matches": [d["doc_id"] for d in top_k_docs[:rerank_top_n]]}
 
 # ================= Q5: GraphRAG Endpoints =================
 @app.post("/extract-graph")
